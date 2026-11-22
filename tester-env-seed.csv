@@ -1,0 +1,25 @@
+HB.name,HB.location,HB.tags,HB.quantity,HB.purchase_price,HB.purchase_date,HB.purchase_from,HB.manufacturer,HB.model_number,HB.serial_number,HB.warranty_expires,HB.warranty_details,HB.notes,HB.description,HB.archived,HB.import_ref
+Cordless Drill,Garage/Workbench,General,1,189.00,2024-03-16,Hardware Depot,Makita,XPH12Z,DR-88213,,,Charger lives in the top workbench drawer.,18V hammer drill with two batteries and a charger.,false,maple-01
+Impact Driver,Garage/Workbench,General,1,149.00,2024-03-16,Hardware Depot,Makita,TD172D,ID-22104,,,,Compact impact driver for deck and fence repairs.,false,maple-02
+Circular Saw,Garage/Workbench,General,1,129.00,2022-09-10,Hardware Depot,DeWalt,DWE575SB,CS-55187,,,Blade guard sticks slightly below 45 degrees.,7-1/4 inch circular saw with a 24-tooth blade.,false,maple-03
+Extension Cord 25 ft,Garage/Workbench,General,3,24.99,2023-05-20,BuildMart,Woods,6050,,,,One cord has a yellow replacement plug.,16-gauge outdoor extension cord with lighted ends.,false,maple-04
+LED Work Light,Garage/Workbench,General,2,39.99,2024-11-02,BuildMart,Husky,WL-9000,,,,,9000 lumen tripod work light for the garage.,false,maple-05
+Espresso Machine,Kitchen/Pantry,Appliances;Important,1,649.00,2023-11-24,Kitchen & Co,Breville,BES870XL,ESP-44102,2027-11-24,2-year warranty; descale every 3 months,Descale kit stored behind the machine.,Semi-automatic espresso machine with a built-in grinder.,false,maple-06
+Stand Mixer,Kitchen/Pantry,Appliances,1,379.00,2021-12-18,Kitchen & Co,KitchenAid,KSM150PS,SM-91027,,,Dough hook and whisk are in the drawer below.,5-quart tilt-head stand mixer in matte black.,false,maple-07
+Coffee Grinder,Kitchen/Pantry,Appliances,1,399.00,2024-06-08,Coffee Works,Baratza,Sette 270,CG-33418,2025-06-08,1-year warranty,Burrs replaced in 2025.,Conical burr grinder set up for espresso.,false,maple-08
+Cast Iron Skillet,Kitchen/Pantry,General,1,34.95,2020-08-15,General Store,Lodge,L10SK3,,,,Do not wash with soap.,12-inch pre-seasoned cast iron skillet.,false,maple-09
+Water Filter Cartridges,Kitchen/Pantry,General,4,12.75,2026-01-12,Filter Direct,Brita,OB03,,,,Two spare cartridges remain in the original box.,Replacement cartridges for the kitchen pitcher filter.,false,maple-10
+Wi-Fi Router,Living Room/Media Console,Electronics;IOT,1,279.99,2024-01-17,Tech Barn,ASUS,XT8,RTR-20240117,2027-01-17,3-year hardware warranty,Second mesh node is in the office.,AX6600 mesh router covering the ground floor.,false,maple-11
+55-inch OLED TV,Living Room/Media Console,Electronics,1,1199.00,2023-07-02,Tech Barn,LG,OLED55C3PUA,TV-77310,2025-07-02,1-year panel warranty,Wall mount is rated for 40 kg.,55-inch OLED television on a wall mount.,false,maple-12
+Game Console,Living Room/Media Console,Electronics,1,499.99,2022-11-19,Tech Barn,Sony,CFI-1216A,GC-12207,,,One controller has slight stick drift.,Current-generation game console with two controllers.,false,maple-13
+Office Chair,Office,General,1,1150.00,2021-04-03,Ergo Supply,Herman Miller,AE113AWA,OC-40219,2033-04-03,12-year warranty,Armrest height lever is loose.,Ergonomic task chair with adjustable lumbar support.,false,maple-14
+Standing Desk,Office,General,1,649.00,2021-04-03,Ergo Supply,Fully,Jarvis 72,SD-88410,,,Height presets set to 72 and 114 cm.,72-inch electric standing desk with four presets.,false,maple-15
+Rack Server,Office/Server Rack,Servers;Electronics,1,420.00,2022-02-11,Surplus IT,Dell,PowerEdge R720,SRV-77120,,,Drives replaced in 2025.,2U rack server running the home lab virtual machines.,false,maple-16
+Network Switch,Office/Server Rack,Servers;IOT,2,34.99,2023-03-04,Tech Barn,Netgear,GS308,SW-30815,2028-03-04,5-year limited warranty,One switch feeds the rack; one is a spare.,8-port gigabit network switch.,false,maple-17
+UPS Battery Backup,Office/Server Rack,Servers,1,459.00,2022-02-11,Surplus IT,APC,SMT1500RM2U,UPS-15018,2025-02-11,3-year warranty,Battery pack replaced in August 2025.,Rack-mount battery backup for the server stack.,false,maple-18
+First Aid Kit,Bathroom/Medicine Cabinet,Important,1,45.00,2025-01-08,Pharmacy Plus,Johnson & Johnson,FAK-200,,,,Restock bandages every spring.,200-piece family first aid kit.,false,maple-19
+Winter Blankets,Bedroom/Closet,General,4,29.99,2019-11-30,Home Textiles,Pendleton,WOOL-Q,,,,Two are stored in vacuum bags.,Wool blend queen-size winter blankets.,false,maple-20
+Travel Suitcase,Bedroom/Closet,General,1,189.00,2023-06-24,Luggage Outlet,Samsonite,78256,,,,Sticker from the 2024 trip is still on the shell.,Hard-shell carry-on suitcase.,false,maple-21
+Old Cordless Phone,Bedroom/Closet,Electronics,1,39.99,2012-05-05,Landline Store,Panasonic,KX-TG,,,,Battery no longer holds a charge.,Landline handset kept as a backup.,true,maple-22
+Storage Bins,Basement/Storage Shelves,General,8,9.50,2024-10-05,BuildMart,Sterilite,1642,,,,Labeled by season on the shelves.,66-quart stackable storage bins.,false,maple-23
+Holiday Lights,Basement/Storage Shelves,General,2,0,,,Holiday Bright,,,,,One strand is half burned out.,Warm-white string lights for the holidays.,false,maple-24

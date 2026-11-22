@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "app": "homebox",
+  "seed_command": "./tester-env seed",
+  "reset_command": "./tester-env reset",
+  "verify_command": "./tester-env verify",
+  "fixture": "tester-env-seed.csv (app-native HB.* CSV imported through POST /api/v1/entities/import)",
+  "digest": "6a6eb33070b21607df0ee88e1b0cf45774213886d4af854fc4daaa6d47541f04",
+  "requirements": {
+    "inventory-items": {
+      "status": "present",
+      "evidence": "24 fixture rows (23 active items + 1 archived); dashboard quick stats show 23 items."
+    },
+    "nested-locations": {
+      "status": "present",
+      "evidence": "Import creates Garage/Workbench, Kitchen/Pantry, Living Room/Media Console, Office/Server Rack, Bathroom/Medicine Cabinet, Bedroom/Closet, Basement/Storage Shelves; 15 locations total (8 default roots + 7 nested)."
+    },
+    "tag-coverage": {
+      "status": "present",
+      "evidence": "Items use only the 6 default tags; tag filter counts: General 13, Electronics 4, Servers 3, Appliances 3, IOT 2, Important 2."
+    },
+    "purchase-details": {
+      "status": "present",
+      "evidence": "Every item except Holiday Lights has a fixed purchase date, vendor and price; most have manufacturer/model/serial (e.g. Cordless Drill: Makita XPH12Z, serial DR-88213, $189.00 on 2024-03-16)."
+    },
+    "warranty-details": {
+      "status": "present",
+      "evidence": "Fixed warranty expiry/detail pairs: Espresso Machine 2027-11-24, Wi-Fi Router 2027-01-17, Network Switch 2028-03-04, Office Chair 2033-04-03; two expired examples (Coffee Grinder 2025-06-08, UPS 2025-02-11)."
+    },
+    "maintenance-history": {
+      "status": "present",
+      "evidence": "5 fixed entries: 2 completed on Espresso Machine (2026-02-14, 2025-12-06), 1 completed + 1 scheduled (2026-12-15) on Rack Server, 1 completed (2026-01-09) on Wi-Fi Router."
+    },
+    "archived-item": {
+      "status": "present",
+      "evidence": "Old Cordless Phone in Bedroom/Closet is archived; hidden from the default item list and from statistics."
+    },
+    "quantity-stock": {
+      "status": "present",
+      "evidence": "Storage Bins 8, Winter Blankets 4, Water Filter Cartridges 4, Extension Cord 25 ft 3, LED Work Light 2, Network Switch 2, Holiday Lights 2."
+    },
+    "search-oracles": {
+      "status": "present",
+      "evidence": "Search 'Makita' returns 2 items (Cordless Drill, Impact Driver); 'Herman Miller' 1 (Office Chair); 'skillet' 1 (Cast Iron Skillet); item names sort alphabetically from 55-inch OLED TV to Winter Blankets."
+    },
+    "missing-optional-field-edge": {
+      "status": "present",
+      "evidence": "Holiday Lights has price 0, no purchase date/vendor and no identifiers, so item detail shows the empty optional-field state."
+    },
+    "dashboard-total-value": {
+      "status": "present",
+      "evidence": "sum(purchasePrice * quantity) over active items is 7291.82; totalWithWarranty is time-dependent and must not be asserted."
+    }
+  }
+}

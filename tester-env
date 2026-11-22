@@ -1,0 +1,462 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Homebox - Tester Environment CLI
+# Usage: ./tester-env <command> [--run-id <id>] [--port <port>] [--ref <git-ref>]
+# Commands: deploy, seed, verify, reset, stop, logs, status, url, help
+#
+# Deterministic access is a fixed owner account registered through the public API
+# (non-demo mode, so wipe/import/user-delete/password-change stay available).
+# The app ships six default tags and eight default locations per collection;
+# `seed` imports tester-env-seed.csv through the app's CSV importer (nested
+# locations, items and their details) and adds fixed maintenance entries.
+
+RUN_ID="${RUN_ID:-default}"
+PORT="${PORT:-7745}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTER_ENV_PROJECT="${TESTER_ENV_PROJECT:-tester-env}"
+TESTER_ENV_APP="${TESTER_ENV_APP:-homebox}"
+TESTER_ENV_SCENARIO="${TESTER_ENV_SCENARIO:-manual}"
+
+# Fixed API-key pepper (must be >= 32 bytes, enforced at startup).
+API_KEY_PEPPER="${HBOX_AUTH_API_KEY_PEPPER:-tester-env-homebox-pepper-2026-0000000001}"
+
+# Fixed first user; registration makes it owner of the collection.
+OWNER_NAME="${HBOX_OWNER_NAME:-Tester Owner}"
+OWNER_EMAIL="${HBOX_OWNER_EMAIL:-owner@example.com}"
+OWNER_PASSWORD="${HBOX_OWNER_PASSWORD:-homebox2026}"
+
+# App-native CSV import fixture (HB.* headers) plus fixed maintenance entries.
+# Import is keyed on HB.import_ref, so re-running seed updates instead of duplicating.
+SEED_CSV="${SCRIPT_DIR}/tester-env-seed.csv"
+SEED_ITEMS=23            # active items (1 archived item is excluded from statistics)
+SEED_LOCATIONS=15        # 8 default root locations + 7 nested ones created by the import
+SEED_TAGS=6              # the app's default tags
+SEED_VALUE=7291.82       # sum(purchasePrice * quantity) over active items
+SEED_MAINTENANCE=5
+SEED_DIGEST="6a6eb33070b21607df0ee88e1b0cf45774213886d4af854fc4daaa6d47541f04"
+
+# item|name|completedDate|scheduledDate|cost|description
+MAINTENANCE_ENTRIES=(
+    "Espresso Machine|Descale and backflush|2026-02-14||0|Pump pressure checked after descaling."
+    "Espresso Machine|Replace group head gasket|2025-12-06||12.50|Gasket replaced with the spare from the descale kit."
+    "Rack Server|Replace drive bay 3|2025-08-19||89.00|4 TB drive swapped and the array rebuilt."
+    "Rack Server|Firmware update and BIOS check||2026-12-15|0|Scheduled annual maintenance window."
+    "Wi-Fi Router|Firmware update to 3.0.0.4|2026-01-09||0|Security patch applied from the router admin page."
+)
+
+refresh_names() {
+    local suffix=""
+    if [[ "${RUN_ID}" != "default" ]]; then
+        suffix="-${RUN_ID}"
+    fi
+
+    CONTAINER_NAME="tester-env-homebox${suffix}"
+    # IMAGE_TAG set by scripts/rl-env to a content-addressed tag so identical
+    # (baseline, patch-set) combos share an image. Manual invocations get :dev.
+    IMAGE_NAME="${IMAGE_TAG:-tester-env-homebox:dev}"
+    DATA_VOLUME="homebox-data${suffix}"
+}
+
+api() {
+    curl -fsS --max-time 10 -H "Authorization: Bearer ${TOKEN}" "$@"
+}
+
+login() {
+    local response
+    response="$(curl -fsS --max-time 10 -X POST "http://127.0.0.1:${PORT}/api/v1/users/login" \
+        -H 'Content-Type: application/json' \
+        -d "{\"username\":\"${OWNER_EMAIL}\",\"password\":\"${OWNER_PASSWORD}\",\"stayLoggedIn\":true}")"
+    # The API returns the token already prefixed with "Bearer ".
+    TOKEN="$(jq -r '.token | sub("^Bearer "; "")' <<<"${response}")"
+    if [[ -z "${TOKEN}" || "${TOKEN}" == "null" ]]; then
+        echo "ERROR: login returned no token: ${response}" >&2
+        return 1
+    fi
+}
+
+wait_for_ready() {
+    echo "==> Waiting for Homebox on http://127.0.0.1:${PORT}/api/v1/status ..."
+    for _ in $(seq 1 90); do
+        if curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/v1/status" 2>/dev/null | jq -e '.health == true' >/dev/null 2>&1; then
+            echo "==> Homebox is ready."
+            return 0
+        fi
+        if ! docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
+            echo "ERROR: container ${CONTAINER_NAME} exited during startup" >&2
+            docker logs --tail 80 "${CONTAINER_NAME}" >&2 || true
+            return 1
+        fi
+        sleep 2
+    done
+    echo "ERROR: Homebox did not become ready within 180s" >&2
+    docker logs --tail 80 "${CONTAINER_NAME}" >&2 || true
+    return 1
+}
+
+register_owner() {
+    local body status
+    body="$(mktemp)"
+    status="$(curl -sS --max-time 10 -o "${body}" -w '%{http_code}' \
+        -X POST "http://127.0.0.1:${PORT}/api/v1/users/register" \
+        -H 'Content-Type: application/json' \
+        -d "{\"name\":\"${OWNER_NAME}\",\"email\":\"${OWNER_EMAIL}\",\"password\":\"${OWNER_PASSWORD}\"}")"
+    if [[ "${status}" == "204" ]]; then
+        echo "==> Registered owner ${OWNER_EMAIL}."
+    else
+        # Re-deploy on an existing volume: the user is already there.
+        if login 2>/dev/null; then
+            echo "==> Owner ${OWNER_EMAIL} already exists."
+        else
+            echo "ERROR: registration failed (HTTP ${status}): $(cat "${body}")" >&2
+            rm -f "${body}"
+            return 1
+        fi
+    fi
+    rm -f "${body}"
+}
+
+cmd_deploy() {
+    local ref="${1:-}"
+
+    if [[ -n "${ref}" ]]; then
+        echo "==> Checking out ref: ${ref}"
+        git -C "${SCRIPT_DIR}" checkout "${ref}"
+        echo "==> Source now at: $(git -C "${SCRIPT_DIR}" rev-parse --short HEAD)"
+    fi
+
+    local commit build_time version
+    commit="$(git -C "${SCRIPT_DIR}" rev-parse HEAD)"
+    build_time="$(git -C "${SCRIPT_DIR}" show -s --format=%cI "${commit}")"
+    version="$(git -C "${SCRIPT_DIR}" describe --tags --always "${commit}")"
+
+    echo "==> Building Docker image ${IMAGE_NAME} (cold first build: pnpm install + nuxt generate + Go build)..."
+    docker build \
+        --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+        --label "tester-env.app=${TESTER_ENV_APP}" \
+        --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+        --build-arg COMMIT="${commit}" \
+        --build-arg BUILD_TIME="${build_time}" \
+        --build-arg VERSION="${version}" \
+        -t "${IMAGE_NAME}" \
+        "${SCRIPT_DIR}"
+
+    docker volume create \
+        --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+        --label "tester-env.app=${TESTER_ENV_APP}" \
+        --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+        --label "tester-env.run_id=${TESTER_ENV_RUN_ID:-${RUN_ID}}" \
+        "${DATA_VOLUME}" >/dev/null
+
+    docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+
+    echo "==> Starting container on port ${PORT}..."
+    docker run -d --name "${CONTAINER_NAME}" \
+        --label "tester-env.project=${TESTER_ENV_PROJECT}" \
+        --label "tester-env.app=${TESTER_ENV_APP}" \
+        --label "tester-env.scenario=${TESTER_ENV_SCENARIO}" \
+        --label "tester-env.run_id=${TESTER_ENV_RUN_ID:-${RUN_ID}}" \
+        -p "${PORT}:7745" \
+        -v "${DATA_VOLUME}:/data" \
+        -e HBOX_AUTH_API_KEY_PEPPER="${API_KEY_PEPPER}" \
+        -e HBOX_DEMO=false \
+        -e HBOX_OPTIONS_GITHUB_RELEASE_CHECK=false \
+        -e HBOX_LOG_LEVEL=-1 \
+        "${IMAGE_NAME}" >/dev/null
+
+    wait_for_ready
+    register_owner
+    echo "==> Deployment complete. App running at $(browser_url)"
+    echo "==> Credentials: ${OWNER_EMAIL} / ${OWNER_PASSWORD}"
+}
+
+browser_url() {
+    echo "${TESTER_ENV_BROWSER_ORIGIN:-http://localhost:${PORT}}"
+}
+
+require_running() {
+    if ! docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
+        echo "Error: container ${CONTAINER_NAME} is not running. Run './tester-env deploy' first." >&2
+        exit 1
+    fi
+}
+
+api_post_json() {
+    local url="$1" body="$2"
+    api -o /dev/null -X POST "${url}" -H 'Content-Type: application/json' -d "${body}"
+}
+
+item_id_by_name() {
+    local name="$1"
+    api "http://127.0.0.1:${PORT}/api/v1/entities?page=1&pageSize=100&includeArchived=true&q=$(jq -rn --arg v "${name}" '$v|@uri')" \
+        | jq -r --arg n "${name}" '[.items[] | select(.name == $n) | .id] | first // empty'
+}
+
+ensure_maintenance() {
+    local spec="$1"
+    IFS='|' read -r item_name entry_name completed scheduled cost description <<<"${spec}"
+
+    local item_id existing
+    item_id="$(item_id_by_name "${item_name}")"
+    if [[ -z "${item_id}" ]]; then
+        echo "ERROR: maintenance target item '${item_name}' not found" >&2
+        exit 1
+    fi
+
+    existing="$(api "http://127.0.0.1:${PORT}/api/v1/entities/${item_id}/maintenance")"
+    if jq -e --arg n "${entry_name}" '[.[] | select(.name == $n)] | length > 0' <<<"${existing}" >/dev/null; then
+        echo "    maintenance exists: ${item_name} / ${entry_name}"
+        return 0
+    fi
+
+    api_post_json "http://127.0.0.1:${PORT}/api/v1/entities/${item_id}/maintenance" \
+        "$(jq -n --arg n "${entry_name}" --arg c "${completed}" --arg s "${scheduled}" \
+            --arg cost "${cost}" --arg d "${description}" \
+            '{name: $n, completedDate: $c, scheduledDate: $s, cost: $cost, description: $d}')"
+    echo "    maintenance created: ${item_name} / ${entry_name}"
+}
+
+cmd_seed() {
+    require_running
+    login
+
+    if [[ ! -f "${SEED_CSV}" ]]; then
+        echo "ERROR: seed fixture missing: ${SEED_CSV}" >&2
+        exit 1
+    fi
+
+    echo "==> Importing deterministic baseline from $(basename "${SEED_CSV}")..."
+    local code
+    code="$(curl -sS --max-time 120 -o /dev/null -w '%{http_code}' \
+        -H "Authorization: Bearer ${TOKEN}" \
+        -F "csv=@${SEED_CSV}" \
+        "http://127.0.0.1:${PORT}/api/v1/entities/import")"
+    if [[ "${code}" != "204" ]]; then
+        echo "ERROR: CSV import failed (HTTP ${code})" >&2
+        exit 1
+    fi
+    echo "    $(($(wc -l <"${SEED_CSV}") - 1)) fixture rows imported (idempotent by HB.import_ref)"
+
+    echo "==> Ensuring fixed maintenance history..."
+    local spec
+    for spec in "${MAINTENANCE_ENTRIES[@]}"; do
+        ensure_maintenance "${spec}"
+    done
+
+    echo "==> Seed complete."
+}
+
+# Canonical, id-free snapshot of the collection: one line per location, item and
+# maintenance entry. Identical reset+seed must produce the same digest.
+seed_snapshot() {
+    local tree locmap
+    tree="$(api "http://127.0.0.1:${PORT}/api/v1/entities/tree")"
+    locmap="$(jq -c 'def walk($p): .[] | ($p + [.name]) as $q | {(.id | tostring): ($q | join(" / "))}, (.children | walk($q)); reduce walk([]) as $e ({}; . + $e)' <<<"${tree}")"
+
+    jq -r 'def walk($p): .[] | ($p + [.name]) as $q | ("location\t" + ($q | join(" / "))), (.children | walk($q)); walk([])' <<<"${tree}"
+
+    api "http://127.0.0.1:${PORT}/api/v1/entities?page=1&pageSize=200&includeArchived=true&orderBy=name&orderDirection=asc" \
+        | jq -r '.items[].id' \
+        | while read -r id; do
+            api "http://127.0.0.1:${PORT}/api/v1/entities/${id}" \
+                | jq -c -S --argjson paths "${locmap}" \
+                    '{name, path: $paths[(.location.id // "")], quantity, purchasePrice, purchaseDate,
+                      purchaseFrom, manufacturer, modelNumber, serialNumber, warrantyExpires,
+                      warrantyDetails, notes, description, archived,
+                      tags: ([.tags[].name] | sort)}'
+        done
+
+    api "http://127.0.0.1:${PORT}/api/v1/maintenance?status=both" \
+        | jq -c -S '.[] | {itemName, name, completedDate, scheduledDate, cost}'
+}
+
+seed_digest() {
+    seed_snapshot | LC_ALL=C sort | sha256sum | cut -d' ' -f1
+}
+
+cmd_verify() {
+    require_running
+    echo "==> Verifying health, auth, defaults and the deterministic seed..."
+
+    local status_json
+    status_json="$(curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/v1/status")"
+    jq -e '.health == true' <<<"${status_json}" >/dev/null
+    jq -e '.demo == false' <<<"${status_json}" >/dev/null
+    echo "    health:    /api/v1/status health=true, demo=false"
+
+    local home_code
+    home_code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/")"
+    if [[ "${home_code}" != "200" ]]; then
+        echo "Error: / returned ${home_code}, expected 200 (embedded SPA)." >&2
+        exit 1
+    fi
+    echo "    frontend:  / -> 200"
+
+    login
+    local self
+    self="$(api "http://127.0.0.1:${PORT}/api/v1/users/self")"
+    jq -e --arg e "${OWNER_EMAIL}" '.item.email == $e' <<<"${self}" >/dev/null
+    echo "    auth:      owner login works (${OWNER_EMAIL})"
+
+    local stats
+    stats="$(api "http://127.0.0.1:${PORT}/api/v1/groups/statistics")"
+    jq -e --argjson n "${SEED_ITEMS}" '.totalItems == $n' <<<"${stats}" >/dev/null || {
+        echo "Error: expected ${SEED_ITEMS} items, got $(jq -r .totalItems <<<"${stats}")." >&2; exit 1; }
+    jq -e --argjson n "${SEED_LOCATIONS}" '.totalLocations == $n' <<<"${stats}" >/dev/null || {
+        echo "Error: expected ${SEED_LOCATIONS} locations, got $(jq -r .totalLocations <<<"${stats}")." >&2; exit 1; }
+    jq -e --argjson n "${SEED_TAGS}" '.totalTags == $n' <<<"${stats}" >/dev/null || {
+        echo "Error: expected ${SEED_TAGS} tags, got $(jq -r .totalTags <<<"${stats}")." >&2; exit 1; }
+    jq -e --argjson v "${SEED_VALUE}" '(.totalItemPrice - $v) | fabs < 0.005' <<<"${stats}" >/dev/null || {
+        echo "Error: expected total value ${SEED_VALUE}, got $(jq -r .totalItemPrice <<<"${stats}")." >&2; exit 1; }
+    echo "    totals:    ${SEED_ITEMS} items, ${SEED_LOCATIONS} locations, ${SEED_TAGS} tags, value ${SEED_VALUE}"
+
+    local drill_id drill archived_id
+    drill_id="$(item_id_by_name "Cordless Drill")"
+    [[ -n "${drill_id}" ]] || { echo "Error: 'Cordless Drill' not found." >&2; exit 1; }
+    drill="$(api "http://127.0.0.1:${PORT}/api/v1/entities/${drill_id}")"
+    jq -e '.manufacturer == "Makita" and .location.name == "Workbench"' <<<"${drill}" >/dev/null || {
+        echo "Error: 'Cordless Drill' is missing its manufacturer or Workbench location." >&2; exit 1; }
+    echo "    item:      Cordless Drill -> Garage / Workbench, Makita, serial $(jq -r .serialNumber <<<"${drill}")"
+
+    archived_id="$(item_id_by_name "Old Cordless Phone")"
+    [[ -n "${archived_id}" ]] || { echo "Error: archived item 'Old Cordless Phone' not found." >&2; exit 1; }
+    jq -e '.archived == true' <<<"$(api "http://127.0.0.1:${PORT}/api/v1/entities/${archived_id}")" >/dev/null || {
+        echo "Error: 'Old Cordless Phone' is not archived." >&2; exit 1; }
+    echo "    edge:      1 archived item (Old Cordless Phone)"
+
+    local maint maint_count
+    maint="$(api "http://127.0.0.1:${PORT}/api/v1/maintenance?status=both")"
+    maint_count="$(jq -r 'length' <<<"${maint}")"
+    [[ "${maint_count}" == "${SEED_MAINTENANCE}" ]] || {
+        echo "Error: expected ${SEED_MAINTENANCE} maintenance entries, got ${maint_count}." >&2; exit 1; }
+    jq -e '[.[] | select(.itemName == "Rack Server")] | length == 2' <<<"${maint}" >/dev/null || {
+        echo "Error: expected 2 maintenance entries for 'Rack Server'." >&2; exit 1; }
+    echo "    history:   ${SEED_MAINTENANCE} maintenance entries (2 on Rack Server)"
+
+    local makita
+    makita="$(api "http://127.0.0.1:${PORT}/api/v1/entities?page=1&pageSize=100&q=Makita")"
+    jq -e '.total == 2' <<<"${makita}" >/dev/null || {
+        echo "Error: expected 2 items for search 'Makita', got $(jq -r .total <<<"${makita}")." >&2; exit 1; }
+    echo "    search:    'Makita' -> 2 items"
+
+    local digest
+    digest="$(seed_digest)"
+    if [[ -n "${SEED_DIGEST}" && "${digest}" != "${SEED_DIGEST}" ]]; then
+        echo "Error: seed digest ${digest} != expected ${SEED_DIGEST}." >&2
+        exit 1
+    fi
+    echo "    digest:    ${digest}${SEED_DIGEST:+ (matches pinned)}"
+    echo "==> Verify passed."
+}
+
+cmd_reset() {
+    echo "==> Resetting environment..."
+    docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    docker volume rm "${DATA_VOLUME}" >/dev/null 2>&1 || true
+    echo "==> Reset complete. Run 'deploy' to start fresh."
+}
+
+cmd_stop() {
+    echo "==> Stopping container..."
+    docker stop "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    echo "==> Stopped (data volume preserved)."
+}
+
+cmd_logs() {
+    docker logs -f "${CONTAINER_NAME}" 2>/dev/null || echo "Container not running."
+}
+
+cmd_status() {
+    if docker ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Names}}' | grep -q .; then
+        echo "Status: RUNNING"
+        echo "URL: $(browser_url)"
+        echo "Container: ${CONTAINER_NAME}"
+        echo "Image: $(docker inspect -f '{{.Config.Image}}' "${CONTAINER_NAME}")"
+    else
+        echo "Status: NOT RUNNING"
+        echo "Container: ${CONTAINER_NAME}"
+    fi
+}
+
+cmd_url() {
+    browser_url
+}
+
+cmd_help() {
+    cat <<EOF
+Homebox - Tester Environment CLI
+
+Usage: ./tester-env <command> [--run-id <id>] [--port <port>] [--ref <git-ref>]
+
+Commands:
+  deploy    Build image from source, start container, register the owner account
+  seed      Idempotent deterministic baseline (tester-env-seed.csv + maintenance history)
+  verify    Assert health, embedded SPA, auth, seed counts and the id-free seed digest
+  reset     Stop and remove container plus /data volume
+  stop      Stop container (preserves data)
+  logs      Tail container logs
+  status    Show container status and URL
+  url       Print the browser-visible URL
+  help      Show this help message
+
+Options:
+  --ref <git-ref>   Git ref to check out before deploy
+  --run-id <id>     Isolate container and volume names for parallel runs (default: default)
+  --port <port>     Host port bound to container port 7745 (default: 7745)
+
+Environment:
+  HBOX_AUTH_API_KEY_PEPPER  Fixed >=32-byte pepper (default built in)
+  HBOX_OWNER_EMAIL / HBOX_OWNER_PASSWORD / HBOX_OWNER_NAME  Owner account defaults
+  HBOX_DEMO=false and HBOX_OPTIONS_GITHUB_RELEASE_CHECK=false are set by deploy.
+
+Credentials: ${OWNER_EMAIL} / ${OWNER_PASSWORD} (non-demo owner account)
+Data: named volume <homebox-data[-run-id]> mounted at /data (SQLite DB + attachments)
+EOF
+}
+
+main() {
+    local cmd="${1:-help}"
+    local ref=""
+
+    for ((i=2; i<=$#; i++)); do
+        local arg="${!i}"
+        case "${arg}" in
+            --ref)
+                local next=$((i+1))
+                if [[ ${next} -le $# ]]; then ref="${!next}"; ((i++)); else echo "Error: --ref requires a value"; exit 1; fi
+                ;;
+            --run-id)
+                local next=$((i+1))
+                if [[ ${next} -le $# ]]; then RUN_ID="${!next}"; ((i++)); else echo "Error: --run-id requires a value"; exit 1; fi
+                ;;
+            --port)
+                local next=$((i+1))
+                if [[ ${next} -le $# ]]; then PORT="${!next}"; ((i++)); else echo "Error: --port requires a value"; exit 1; fi
+                ;;
+            --help|-h)
+                cmd_help; exit 0
+                ;;
+            *)
+                echo "Unknown option: ${arg}"; cmd_help; exit 1
+                ;;
+        esac
+    done
+
+    refresh_names
+
+    case "${cmd}" in
+        deploy) cmd_deploy "${ref}" ;;
+        seed) cmd_seed ;;
+        verify) cmd_verify ;;
+        reset) cmd_reset ;;
+        stop) cmd_stop ;;
+        logs) cmd_logs ;;
+        status) cmd_status ;;
+        url) cmd_url ;;
+        help|--help|-h) cmd_help ;;
+        *) echo "Unknown command: ${cmd}"; cmd_help; exit 1 ;;
+    esac
+}
+
+main "$@"
